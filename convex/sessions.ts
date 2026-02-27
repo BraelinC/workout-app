@@ -116,9 +116,29 @@ export const get = query({
           .withIndex("by_exercise", (q) => q.eq("sessionExerciseId", exercise._id))
           .collect();
 
+        // Use session exercise image, fall back to template, then any past session with same name
+        let imageStorageId = exercise.imageStorageId;
+        if (!imageStorageId && exercise.templateExerciseId) {
+          const templateExercise = await ctx.db.get(exercise.templateExerciseId);
+          if (templateExercise?.imageStorageId) {
+            imageStorageId = templateExercise.imageStorageId;
+          }
+        }
+        if (!imageStorageId) {
+          // Search all past session exercises with same name for an image
+          const pastWithName = await ctx.db
+            .query("sessionExercises")
+            .collect();
+          const match = pastWithName.find(
+            (e) => e.name.toLowerCase() === exercise.name.toLowerCase() && e.imageStorageId && e._id !== exercise._id
+          );
+          if (match?.imageStorageId) {
+            imageStorageId = match.imageStorageId;
+          }
+        }
         let imageUrl = null;
-        if (exercise.imageStorageId) {
-          imageUrl = await ctx.storage.getUrl(exercise.imageStorageId);
+        if (imageStorageId) {
+          imageUrl = await ctx.storage.getUrl(imageStorageId);
         }
 
         return {
@@ -358,6 +378,69 @@ export const removeSet = mutation({
   args: { id: v.id("sets") },
   handler: async (ctx, args) => {
     await ctx.db.delete(args.id);
+  },
+});
+
+// Get all unique exercise names from user's past sessions
+export const getPastExercises = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
+      .first();
+
+    if (!user) return [];
+
+    // Get all user's sessions
+    const sessions = await ctx.db
+      .query("workoutSessions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+
+    // Get all exercises from those sessions with their latest weight/reps
+    const exerciseMap = new Map<string, { name: string; lastWeight?: number; lastReps: number; imageStorageId?: Id<"_storage"> }>();
+    
+    for (const session of sessions) {
+      const exercises = await ctx.db
+        .query("sessionExercises")
+        .withIndex("by_session", (q) => q.eq("sessionId", session._id))
+        .collect();
+      
+      for (const exercise of exercises) {
+        const sets = await ctx.db
+          .query("sets")
+          .withIndex("by_exercise", (q) => q.eq("sessionExerciseId", exercise._id))
+          .collect();
+        
+        // Get the most recent set with weight/reps data
+        const lastSet = sets.sort((a, b) => b.setNumber - a.setNumber)[0];
+        
+        const lower = exercise.name.toLowerCase();
+        if (!exerciseMap.has(lower) || (lastSet?.weight && !exerciseMap.get(lower)?.lastWeight)) {
+          exerciseMap.set(lower, {
+            name: exercise.name,
+            lastWeight: lastSet?.weight,
+            lastReps: lastSet?.reps ?? 10,
+            imageStorageId: exercise.imageStorageId ?? exerciseMap.get(lower)?.imageStorageId,
+          });
+        }
+      }
+    }
+
+    // Resolve image URLs
+    const results = [];
+    for (const ex of exerciseMap.values()) {
+      let imageUrl: string | null = null;
+      if (ex.imageStorageId) {
+        imageUrl = await ctx.storage.getUrl(ex.imageStorageId);
+      }
+      results.push({ ...ex, imageUrl });
+    }
+    return results;
   },
 });
 

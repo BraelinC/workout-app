@@ -189,3 +189,54 @@ export const generateUploadUrl = mutation({
     return await ctx.storage.generateUploadUrl();
   },
 });
+
+// Get all unique exercise names from user's templates
+export const getPastExercises = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
+      .first();
+
+    if (!user) return [];
+
+    // Get all user's templates
+    const templates = await ctx.db
+      .query("workoutTemplates")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+
+    // Get all exercises from those templates
+    const allExercises: { name: string; defaultSets: number; defaultReps: number }[] = [];
+    
+    for (const template of templates) {
+      const exercises = await ctx.db
+        .query("templateExercises")
+        .withIndex("by_template", (q) => q.eq("templateId", template._id))
+        .collect();
+      
+      for (const exercise of exercises) {
+        allExercises.push({
+          name: exercise.name,
+          defaultSets: exercise.defaultSets,
+          defaultReps: exercise.defaultReps,
+        });
+      }
+    }
+
+    // Dedupe by name, keep first occurrence (most recent sets/reps)
+    const seen = new Set<string>();
+    const unique = allExercises.filter((ex) => {
+      const lower = ex.name.toLowerCase();
+      if (seen.has(lower)) return false;
+      seen.add(lower);
+      return true;
+    });
+
+    return unique;
+  },
+});

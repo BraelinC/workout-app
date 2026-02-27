@@ -2,7 +2,7 @@
   "expo": {
     "name": "workout-app",
     "slug": "workout-app",
-    "version": "1.0.0",
+    "version": "1.0.9",
     "scheme": "workout-app",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -26,7 +26,8 @@
       "package": "com.workoutapp",
       "permissions": [
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "versionCode": 10
     },
     "web": {
       "favicon": "./assets/favicon.png",

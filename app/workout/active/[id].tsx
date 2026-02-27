@@ -10,20 +10,20 @@ import {
   TextInput,
   Alert,
   StatusBar,
-  Image,
   Modal,
-  ActivityIndicator,
+  FlatList,
+  Image,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { useState } from "react";
-import { Id } from "../../../convex/_generated/dataModel";
 import * as ImagePicker from "expo-image-picker";
+import { Id } from "../../../convex/_generated/dataModel";
 
 export default function ActiveWorkoutScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const session = useQuery(api.sessions.get, { id: id as Id<"workoutSessions"> });
   const progress = useQuery(api.sessions.getProgress, { id: id as Id<"workoutSessions"> });
+  const pastExercises = useQuery(api.sessions.getPastExercises);
   const updateSet = useMutation(api.sessions.updateSet);
   const completeSession = useMutation(api.sessions.complete);
   const addSet = useMutation(api.sessions.addSet);
@@ -35,11 +35,13 @@ export default function ActiveWorkoutScreen() {
     weight: string;
     reps: string;
   } | null>(null);
-
-  const [showNameModal, setShowNameModal] = useState(false);
+  
+  const [showAddExercise, setShowAddExercise] = useState(false);
   const [newExerciseName, setNewExerciseName] = useState("");
-  const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [newExerciseSets, setNewExerciseSets] = useState("3");
+  const [newExerciseReps, setNewExerciseReps] = useState("10");
+  const [newExerciseImage, setNewExerciseImage] = useState<string | null>(null);
+  const [newExerciseStorageId, setNewExerciseStorageId] = useState<Id<"_storage"> | null>(null);
 
   if (!session) {
     return (
@@ -73,68 +75,62 @@ export default function ActiveWorkoutScreen() {
     });
   };
 
-  const handleOpenCamera = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permission needed", "Camera permission is required to take photos");
-      return;
-    }
-
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-
-    if (!result.canceled && result.assets[0]) {
-      setCapturedImageUri(result.assets[0].uri);
-      setShowNameModal(true);
-    }
-  };
-
   const handleAddExercise = async () => {
     if (!newExerciseName.trim()) {
       Alert.alert("Error", "Please enter an exercise name");
       return;
     }
+    
+    await addExercise({
+      sessionId: id as Id<"workoutSessions">,
+      name: newExerciseName.trim(),
+      sets: parseInt(newExerciseSets) || 3,
+      reps: parseInt(newExerciseReps) || 10,
+      imageStorageId: newExerciseStorageId ?? undefined,
+    });
+    
+    setNewExerciseName("");
+    setNewExerciseSets("3");
+    setNewExerciseReps("10");
+    setNewExerciseImage(null);
+    setNewExerciseStorageId(null);
+    setShowAddExercise(false);
+  };
 
-    setIsUploading(true);
-    try {
-      let imageStorageId: Id<"_storage"> | undefined;
+  const handleSelectPastExercise = (exercise: { name: string; lastWeight?: number; lastReps: number; imageUrl?: string | null }) => {
+    setNewExerciseName(exercise.name);
+    setNewExerciseReps(exercise.lastReps.toString());
+  };
 
-      // Upload image if we have one
-      if (capturedImageUri) {
+  const handleTakePhoto = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Permission needed", "Camera access is required to take exercise photos");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const uri = result.assets[0].uri;
+      setNewExerciseImage(uri);
+      try {
         const uploadUrl = await generateUploadUrl();
-        const response = await fetch(capturedImageUri);
+        const response = await fetch(uri);
         const blob = await response.blob();
-
-        const uploadResult = await fetch(uploadUrl, {
+        const uploadResponse = await fetch(uploadUrl, {
           method: "POST",
           headers: { "Content-Type": blob.type || "image/jpeg" },
           body: blob,
         });
-
-        if (uploadResult.ok) {
-          const { storageId } = await uploadResult.json();
-          imageStorageId = storageId;
-        }
+        const { storageId } = await uploadResponse.json();
+        setNewExerciseStorageId(storageId);
+      } catch (err) {
+        console.log("Image upload failed:", err);
       }
-
-      await addExercise({
-        sessionId: id as Id<"workoutSessions">,
-        name: newExerciseName.trim(),
-        sets: 1,
-        reps: 10,
-        imageStorageId,
-      });
-
-      setNewExerciseName("");
-      setCapturedImageUri(null);
-      setShowNameModal(false);
-    } catch (err: any) {
-      Alert.alert("Error", err.message || "Failed to add exercise");
-    } finally {
-      setIsUploading(false);
     }
   };
 
@@ -168,8 +164,7 @@ export default function ActiveWorkoutScreen() {
   return (
     <LinearGradient colors={["#1a1a2e", "#16213e"]} style={styles.gradientContainer}>
       <StatusBar barStyle="light-content" />
-      <SafeAreaView style={styles.safeArea} edges={["top"]}>
-        <View style={styles.container}>
+      <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
@@ -207,7 +202,8 @@ export default function ActiveWorkoutScreen() {
                 {exercise.imageUrl ? (
                   <Image
                     source={{ uri: exercise.imageUrl }}
-                    style={styles.exerciseImage}
+                    style={styles.exerciseThumb}
+                    resizeMode="cover"
                   />
                 ) : (
                   <View style={styles.exerciseNumber}>
@@ -217,110 +213,117 @@ export default function ActiveWorkoutScreen() {
                 <Text style={styles.exerciseName}>{exercise.name}</Text>
               </View>
 
-              {/* Sets - Clean single bar style */}
-              {exercise.sets?.map((set) => (
-                <TouchableOpacity
-                  key={set._id}
-                  style={[
-                    styles.setBar,
-                    set.completed && styles.setBarCompleted,
-                  ]}
-                  onPress={() => handleToggleSet(set._id, set.completed)}
-                  onLongPress={() =>
-                    setEditingSet({
-                      id: set._id,
-                      weight: set.weight?.toString() || "",
-                      reps: set.reps.toString(),
-                    })
-                  }
-                >
-                  {editingSet?.id === set._id ? (
-                    <View style={styles.setBarEditing}>
-                      <Text style={styles.setBarNumber}>Set {set.setNumber}</Text>
-                      <TextInput
-                        style={styles.setBarInput}
-                        value={editingSet.weight}
-                        onChangeText={(text) =>
-                          setEditingSet({ ...editingSet, weight: text })
-                        }
-                        keyboardType="numeric"
-                        placeholder="lbs"
-                        placeholderTextColor="#666"
-                      />
-                      <Text style={styles.setBarX}>x</Text>
-                      <TextInput
-                        style={styles.setBarInput}
-                        value={editingSet.reps}
-                        onChangeText={(text) =>
-                          setEditingSet({ ...editingSet, reps: text })
-                        }
-                        keyboardType="numeric"
-                        placeholder="reps"
-                        placeholderTextColor="#666"
-                      />
-                      <TouchableOpacity
-                        style={styles.setBarSave}
-                        onPress={handleUpdateSet}
-                      >
-                        <Text style={styles.setBarSaveText}>Done</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <View style={styles.setBarContent}>
-                      <Text style={styles.setBarNumber}>Set {set.setNumber}</Text>
-                      <View style={styles.setBarValues}>
-                        <Text style={styles.setBarWeight}>
-                          {set.weight ? `${set.weight} lbs` : "- lbs"}
-                        </Text>
-                        <Text style={styles.setBarX}>x</Text>
-                        <Text style={styles.setBarReps}>{set.reps} reps</Text>
-                      </View>
-                      <View style={[
-                        styles.setBarCheck,
-                        set.completed && styles.setBarCheckCompleted,
-                      ]}>
-                        <Text style={[
-                          styles.setBarCheckText,
-                          set.completed && styles.setBarCheckTextCompleted,
-                        ]}>
-                          {set.completed ? "✓" : ""}
-                        </Text>
-                      </View>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ))}
+              {/* Sets */}
+              <View style={styles.setsContainer}>
+                <View style={styles.setsHeader}>
+                  <Text style={styles.setHeaderText}>Set</Text>
+                  <Text style={styles.setHeaderText}>Weight</Text>
+                  <Text style={styles.setHeaderText}>Reps</Text>
+                  <Text style={styles.setHeaderText}>Done</Text>
+                </View>
 
-              {/* Add Set Button - More prominent */}
-              <TouchableOpacity
-                style={styles.addSetBar}
-                onPress={() => handleAddSet(exercise._id)}
-              >
-                <Text style={styles.addSetBarText}>+ Add Set</Text>
-              </TouchableOpacity>
+                {exercise.sets?.map((set) => (
+                  <View key={set._id} style={styles.setRow}>
+                    <Text style={styles.setNumber}>{set.setNumber}</Text>
+
+                    {editingSet?.id === set._id ? (
+                      <>
+                        <TextInput
+                          style={styles.setInput}
+                          value={editingSet.weight}
+                          onChangeText={(text) =>
+                            setEditingSet({ ...editingSet, weight: text })
+                          }
+                          keyboardType="numeric"
+                          placeholder="lbs"
+                          placeholderTextColor="#666"
+                        />
+                        <TextInput
+                          style={styles.setInput}
+                          value={editingSet.reps}
+                          onChangeText={(text) =>
+                            setEditingSet({ ...editingSet, reps: text })
+                          }
+                          keyboardType="numeric"
+                          placeholder="reps"
+                          placeholderTextColor="#666"
+                        />
+                        <TouchableOpacity
+                          style={styles.saveButton}
+                          onPress={handleUpdateSet}
+                        >
+                          <Text style={styles.saveButtonText}>Save</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          style={styles.setValue}
+                          onPress={() =>
+                            setEditingSet({
+                              id: set._id,
+                              weight: set.weight?.toString() || "",
+                              reps: set.reps.toString(),
+                            })
+                          }
+                        >
+                          <Text style={styles.setValueText}>
+                            {set.weight || "-"}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.setValue}
+                          onPress={() =>
+                            setEditingSet({
+                              id: set._id,
+                              weight: set.weight?.toString() || "",
+                              reps: set.reps.toString(),
+                            })
+                          }
+                        >
+                          <Text style={styles.setValueText}>{set.reps}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[
+                            styles.checkButton,
+                            set.completed && styles.checkButtonCompleted,
+                          ]}
+                          onPress={() => handleToggleSet(set._id, set.completed)}
+                        >
+                          <Text
+                            style={[
+                              styles.checkText,
+                              set.completed && styles.checkTextCompleted,
+                            ]}
+                          >
+                            {set.completed ? "✓" : ""}
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                ))}
+
+                <TouchableOpacity
+                  style={styles.addSetButton}
+                  onPress={() => handleAddSet(exercise._id)}
+                >
+                  <Text style={styles.addSetText}>+ Add Set</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           ))}
-
-          {/* Add Exercise Button */}
-          {!session.completed && (
-            <TouchableOpacity
-              style={styles.addExerciseCard}
-              onPress={handleOpenCamera}
-            >
-              <Text style={styles.addExerciseText}>+ Add Exercise</Text>
-            </TouchableOpacity>
-          )}
-
-          {/* Empty state */}
-          {(!session.exercises || session.exercises.length === 0) && (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyStateTitle}>No exercises yet</Text>
-              <Text style={styles.emptyStateText}>
-                Tap "Add Exercise" to get started
-              </Text>
-            </View>
-          )}
         </ScrollView>
+
+        {/* Add Exercise Button */}
+        {!session.completed && (
+          <TouchableOpacity
+            style={styles.addExerciseButton}
+            onPress={() => setShowAddExercise(true)}
+          >
+            <Text style={styles.addExerciseText}>+ Add Exercise</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Finish Button */}
         {!session.completed && (
@@ -341,86 +344,145 @@ export default function ActiveWorkoutScreen() {
             <Text style={styles.completedBannerText}>Workout Completed!</Text>
           </View>
         )}
-        </View>
-      </SafeAreaView>
 
-      {/* Exercise Name Modal (after taking photo) */}
-      <Modal
-        visible={showNameModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => {
-          setShowNameModal(false);
-          setCapturedImageUri(null);
-        }}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => {
-            setShowNameModal(false);
-            setCapturedImageUri(null);
-          }}
+        {/* Add Exercise Modal */}
+        <Modal
+          visible={showAddExercise}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setShowAddExercise(false)}
         >
-          <TouchableOpacity activeOpacity={1} style={styles.modalContent}>
-            <View style={styles.modalHandle} />
-            <Text style={styles.modalTitle}>Name this exercise</Text>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHandle} />
+              <Text style={styles.modalTitle}>Add Exercise</Text>
 
-            {/* Image preview */}
-            {capturedImageUri && (
-              <Image
-                source={{ uri: capturedImageUri }}
-                style={styles.imagePreview}
+              {/* Past Exercises Picker */}
+              <View style={styles.pastExercisesContainer}>
+                <Text style={styles.pastExercisesLabel}>Previous Exercises</Text>
+                <FlatList
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  data={[{ _isNew: true as const, name: "", lastReps: 0 }, ...(pastExercises ?? [])] as Array<{ _isNew?: true; name: string; lastReps: number; lastWeight?: number; imageUrl?: string | null }>}
+                  keyExtractor={(item, index) => item._isNew ? "__new__" : `${item.name}-${index}`}
+                  contentContainerStyle={styles.pastExercisesList}
+                  renderItem={({ item }) => {
+                    if (item._isNew) {
+                      return (
+                        <TouchableOpacity style={styles.pastExerciseChip} onPress={handleTakePhoto}>
+                          {newExerciseImage ? (
+                            <Image source={{ uri: newExerciseImage }} style={styles.pastExerciseImage} resizeMode="cover" />
+                          ) : (
+                            <View style={[styles.pastExerciseImagePlaceholder, { backgroundColor: "#1a2a4a" }]}>
+                              <Text style={{ fontSize: 28 }}>📷</Text>
+                            </View>
+                          )}
+                          <Text style={[styles.pastExerciseChipText, { color: "#60a5fa" }]} numberOfLines={1}>
+                            {newExerciseImage ? "Photo ✓" : "New"}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    }
+                    return (
+                      <TouchableOpacity
+                        style={[
+                          styles.pastExerciseChip,
+                          newExerciseName === item.name && styles.pastExerciseChipSelected,
+                        ]}
+                        onPress={() => handleSelectPastExercise(item)}
+                      >
+                        {item.imageUrl ? (
+                          <Image
+                            source={{ uri: item.imageUrl }}
+                            style={styles.pastExerciseImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={styles.pastExerciseImagePlaceholder}>
+                            <Text style={styles.pastExerciseImagePlaceholderText}>💪</Text>
+                          </View>
+                        )}
+                        <Text
+                          style={[
+                            styles.pastExerciseChipText,
+                            newExerciseName === item.name && styles.pastExerciseChipTextSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.name}
+                        </Text>
+                        {item.lastWeight && (
+                          <Text style={styles.pastExerciseSubtext}>
+                            {item.lastWeight} lbs
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  }}
+                />
+              </View>
+
+              {/* Manual Entry */}
+              <TextInput
+                style={styles.input}
+                placeholder="Or type new exercise name"
+                placeholderTextColor="#666"
+                value={newExerciseName}
+                onChangeText={setNewExerciseName}
               />
-            )}
 
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Exercise name (e.g., Bench Press)"
-              placeholderTextColor="#666"
-              value={newExerciseName}
-              onChangeText={setNewExerciseName}
-              autoFocus
-            />
+              <View style={styles.setsRepsContainer}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Sets</Text>
+                  <TextInput
+                    style={styles.smallInput}
+                    value={newExerciseSets}
+                    onChangeText={setNewExerciseSets}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Reps</Text>
+                  <TextInput
+                    style={styles.smallInput}
+                    value={newExerciseReps}
+                    onChangeText={setNewExerciseReps}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
 
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => {
-                  setShowNameModal(false);
-                  setCapturedImageUri(null);
-                  setNewExerciseName("");
-                }}
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleAddExercise} disabled={isUploading}>
-                <LinearGradient
-                  colors={["#4f46e5", "#7c3aed"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={[styles.modalAddButton, isUploading && styles.modalAddButtonDisabled]}
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.modalCancelButton}
+                  onPress={() => {
+                    setShowAddExercise(false);
+                    setNewExerciseName("");
+                  }}
                 >
-                  {isUploading ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.modalAddText}>Add</Text>
-                  )}
-                </LinearGradient>
-              </TouchableOpacity>
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleAddExercise}>
+                  <LinearGradient
+                    colors={["#4f46e5", "#7c3aed"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.modalSaveButton}
+                  >
+                    <Text style={styles.modalSaveText}>Add</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
             </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+          </View>
+        </Modal>
+      </View>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   gradientContainer: {
-    flex: 1,
-  },
-  safeArea: {
     flex: 1,
   },
   container: {
@@ -499,12 +561,12 @@ const styles = StyleSheet.create({
   exerciseHeader: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 12,
+    marginBottom: 16,
   },
   exerciseNumber: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: "rgba(79, 70, 229, 0.2)",
     justifyContent: "center",
     alignItems: "center",
@@ -512,13 +574,13 @@ const styles = StyleSheet.create({
   },
   exerciseNumberText: {
     color: "#818cf8",
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: "700",
   },
-  exerciseImage: {
+  exerciseThumb: {
     width: 44,
     height: 44,
-    borderRadius: 12,
+    borderRadius: 10,
     marginRight: 12,
   },
   exerciseName: {
@@ -527,144 +589,105 @@ const styles = StyleSheet.create({
     color: "#fff",
     flex: 1,
   },
-  // New set bar styles
-  setBar: {
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+  setsContainer: {
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
     borderRadius: 12,
+    padding: 12,
+  },
+  setsHeader: {
+    flexDirection: "row",
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.1)",
     marginBottom: 8,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
   },
-  setBarCompleted: {
-    backgroundColor: "rgba(16, 185, 129, 0.15)",
-    borderColor: "rgba(16, 185, 129, 0.3)",
-  },
-  setBarContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 14,
-  },
-  setBarEditing: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 10,
-  },
-  setBarNumber: {
-    color: "#9ca3af",
-    fontSize: 14,
-    fontWeight: "600",
-    width: 50,
-  },
-  setBarValues: {
+  setHeaderText: {
     flex: 1,
+    fontSize: 12,
+    color: "#9ca3af",
+    textAlign: "center",
+    fontWeight: "600",
+  },
+  setRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    paddingVertical: 8,
   },
-  setBarWeight: {
-    color: "#fff",
+  setNumber: {
+    flex: 1,
     fontSize: 16,
+    color: "#fff",
+    textAlign: "center",
     fontWeight: "600",
   },
-  setBarX: {
-    color: "#6b7280",
-    fontSize: 14,
-    marginHorizontal: 8,
-  },
-  setBarReps: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  setBarInput: {
-    backgroundColor: "rgba(255, 255, 255, 0.1)",
-    borderRadius: 8,
+  setValue: {
+    flex: 1,
     paddingVertical: 8,
     paddingHorizontal: 12,
-    color: "#fff",
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: 8,
+    marginHorizontal: 4,
+  },
+  setValueText: {
     fontSize: 16,
-    textAlign: "center",
-    width: 70,
-  },
-  setBarSave: {
-    backgroundColor: "#4f46e5",
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginLeft: 8,
-  },
-  setBarSaveText: {
     color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
+    textAlign: "center",
   },
-  setBarCheck: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+  setInput: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     backgroundColor: "rgba(255, 255, 255, 0.1)",
+    borderRadius: 8,
+    marginHorizontal: 4,
+    color: "#fff",
+    textAlign: "center",
+    fontSize: 16,
+  },
+  checkButton: {
+    flex: 1,
+    height: 36,
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    borderRadius: 8,
     justifyContent: "center",
     alignItems: "center",
+    marginHorizontal: 4,
     borderWidth: 2,
     borderColor: "rgba(255, 255, 255, 0.2)",
   },
-  setBarCheckCompleted: {
+  checkButtonCompleted: {
     backgroundColor: "rgba(16, 185, 129, 0.3)",
     borderColor: "#10b981",
   },
-  setBarCheckText: {
-    fontSize: 16,
+  checkText: {
+    fontSize: 18,
     color: "#9ca3af",
     fontWeight: "700",
   },
-  setBarCheckTextCompleted: {
+  checkTextCompleted: {
     color: "#10b981",
   },
-  // Add Set button - more prominent
-  addSetBar: {
-    backgroundColor: "rgba(79, 70, 229, 0.15)",
-    borderRadius: 12,
-    padding: 14,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(79, 70, 229, 0.3)",
-    borderStyle: "dashed",
+  saveButton: {
+    flex: 1,
+    paddingVertical: 8,
+    backgroundColor: "#4f46e5",
+    borderRadius: 8,
+    marginHorizontal: 4,
   },
-  addSetBarText: {
-    color: "#818cf8",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  // Add Exercise card
-  addExerciseCard: {
-    backgroundColor: "rgba(79, 70, 229, 0.1)",
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "rgba(79, 70, 229, 0.3)",
-    borderStyle: "dashed",
-  },
-  addExerciseText: {
-    color: "#818cf8",
-    fontSize: 17,
-    fontWeight: "700",
-  },
-  // Empty state
-  emptyState: {
-    alignItems: "center",
-    paddingVertical: 40,
-  },
-  emptyStateTitle: {
+  saveButtonText: {
     color: "#fff",
-    fontSize: 20,
+    textAlign: "center",
     fontWeight: "600",
-    marginBottom: 8,
   },
-  emptyStateText: {
-    color: "#9ca3af",
-    fontSize: 16,
+  addSetButton: {
+    marginTop: 8,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  addSetText: {
+    color: "#818cf8",
+    fontSize: 14,
+    fontWeight: "600",
   },
   finishButton: {
     paddingVertical: 18,
@@ -689,7 +712,21 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
   },
-  // Modal styles
+  // Add Exercise Button & Modal
+  addExerciseButton: {
+    paddingVertical: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    marginTop: 8,
+    borderWidth: 2,
+    borderColor: "#818cf8",
+    borderStyle: "dashed",
+  },
+  addExerciseText: {
+    color: "#818cf8",
+    fontSize: 16,
+    fontWeight: "600",
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.7)",
@@ -716,25 +753,101 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     textAlign: "center",
   },
-  modalInput: {
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+  pastExercisesContainer: {
+    marginBottom: 16,
+  },
+  pastExercisesLabel: {
+    fontSize: 14,
+    color: "#9ca3af",
+    marginBottom: 10,
+  },
+  pastExercisesList: {
+    paddingRight: 16,
+  },
+  pastExerciseChip: {
+    width: 90,
+    borderRadius: 12,
+    backgroundColor: '#1e1e3a',
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
+    borderColor: '#333',
+    marginRight: 10,
+    padding: 0,
+    overflow: 'hidden',
+    alignItems: 'center',
+  },
+  pastExerciseChipSelected: {
+    backgroundColor: "rgba(79, 70, 229, 0.3)",
+    borderColor: "#818cf8",
+  },
+  pastExerciseImage: {
+    width: 90,
+    height: 70,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  pastExerciseImagePlaceholder: {
+    width: 90,
+    height: 70,
+    backgroundColor: '#2a2a4a',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  pastExerciseImagePlaceholderText: {
+    fontSize: 28,
+  },
+  pastExerciseChipText: {
+    paddingHorizontal: 6,
+    paddingTop: 4,
+    fontSize: 11,
+    color: '#ccc',
+  },
+  pastExerciseChipTextSelected: {
+    color: "#818cf8",
+  },
+  pastExerciseSubtext: {
+    paddingHorizontal: 6,
+    paddingBottom: 6,
+    fontSize: 10,
+    color: '#888',
+  },
+  input: {
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
     borderRadius: 12,
     padding: 16,
     fontSize: 16,
     color: "#fff",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+    marginBottom: 16,
+  },
+  setsRepsContainer: {
+    flexDirection: "row",
+    gap: 16,
     marginBottom: 20,
   },
-  imagePreview: {
-    width: 120,
-    height: 120,
-    borderRadius: 16,
-    alignSelf: "center",
-    marginBottom: 20,
+  inputGroup: {
+    flex: 1,
+  },
+  inputLabel: {
+    fontSize: 14,
+    color: "#9ca3af",
+    marginBottom: 8,
+  },
+  smallInput: {
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: "#fff",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+    textAlign: "center",
   },
   modalButtons: {
     flexDirection: "row",
+    justifyContent: "space-between",
     gap: 12,
   },
   modalCancelButton: {
@@ -749,17 +862,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
-  modalAddButton: {
+  modalSaveButton: {
     flex: 1,
     paddingVertical: 16,
-    paddingHorizontal: 24,
     borderRadius: 12,
     alignItems: "center",
   },
-  modalAddButtonDisabled: {
-    opacity: 0.6,
-  },
-  modalAddText: {
+  modalSaveText: {
     color: "#fff",
     fontSize: 16,
     fontWeight: "700",

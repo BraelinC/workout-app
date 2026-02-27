@@ -12,8 +12,8 @@ import {
   StatusBar,
   Image,
   Modal,
+  FlatList,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { useState } from "react";
 import { Id } from "../../convex/_generated/dataModel";
@@ -22,6 +22,7 @@ import * as ImagePicker from "expo-image-picker";
 export default function TemplateDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const template = useQuery(api.templates.get, { id: id as Id<"workoutTemplates"> });
+  const pastExercises = useQuery(api.templates.getPastExercises);
   const updateTemplate = useMutation(api.templates.update);
   const addExercise = useMutation(api.templates.addExercise);
   const updateExercise = useMutation(api.templates.updateExercise);
@@ -154,8 +155,7 @@ export default function TemplateDetailScreen() {
   return (
     <LinearGradient colors={["#1a1a2e", "#16213e"]} style={styles.gradientContainer}>
       <StatusBar barStyle="light-content" />
-      <SafeAreaView style={styles.safeArea} edges={["top"]}>
-        <View style={styles.container}>
+      <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
@@ -249,6 +249,46 @@ export default function TemplateDetailScreen() {
             <View style={styles.modalContent}>
               <View style={styles.modalHandle} />
               <Text style={styles.modalTitle}>Add Exercise</Text>
+
+              {/* Past Exercises Picker */}
+              {pastExercises && pastExercises.length > 0 && (
+                <View style={styles.pastExercisesContainer}>
+                  <Text style={styles.pastExercisesLabel}>Previous Exercises</Text>
+                  <FlatList
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    data={pastExercises}
+                    keyExtractor={(item, index) => `${item.name}-${index}`}
+                    contentContainerStyle={styles.pastExercisesList}
+                    renderItem={({ item }) => (
+                      <TouchableOpacity
+                        style={[
+                          styles.pastExerciseChip,
+                          newExercise.name === item.name && styles.pastExerciseChipSelected,
+                        ]}
+                        onPress={() => {
+                          setNewExercise({
+                            ...newExercise,
+                            name: item.name,
+                            defaultSets: item.defaultSets.toString(),
+                            defaultReps: item.defaultReps.toString(),
+                          });
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.pastExerciseChipText,
+                            newExercise.name === item.name && styles.pastExerciseChipTextSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.name}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  />
+                </View>
+              )}
 
               {/* Image Picker */}
               <View style={styles.imagePickerContainer}>
@@ -344,17 +384,13 @@ export default function TemplateDetailScreen() {
             </View>
           </View>
         </Modal>
-        </View>
-      </SafeAreaView>
+      </View>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   gradientContainer: {
-    flex: 1,
-  },
-  safeArea: {
     flex: 1,
   },
   container: {
@@ -595,5 +631,39 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "700",
+  },
+  // Past Exercises Picker
+  pastExercisesContainer: {
+    marginBottom: 16,
+  },
+  pastExercisesLabel: {
+    fontSize: 14,
+    color: "#9ca3af",
+    marginBottom: 10,
+  },
+  pastExercisesList: {
+    paddingRight: 16,
+  },
+  pastExerciseChip: {
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.15)",
+    maxWidth: 150,
+  },
+  pastExerciseChipSelected: {
+    backgroundColor: "rgba(79, 70, 229, 0.3)",
+    borderColor: "#818cf8",
+  },
+  pastExerciseChipText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  pastExerciseChipTextSelected: {
+    color: "#818cf8",
   },
 });
